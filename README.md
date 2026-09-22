@@ -1,233 +1,210 @@
-# News Pulse — Part 2: Node.js Backend API
+# News Pulse — Part 1: RSS Ingestion & Topic Grouping
 
-Express API serving the topic clusters produced by the Python pipeline, plus a
-job runner that triggers the pipeline on demand.
+Pulls articles from multiple public news RSS feeds, normalises them into one
+schema, fetches the real article body, stores everything in SQLite, and groups
+articles covering the same story into topic clusters with timestamps — the data
+that powers the timeline in Part 3.
+
+## Feeds used
+
+| Source | Feed URL |
+|---|---|
+| BBC News | `http://feeds.bbci.co.uk/news/rss.xml` |
+| NPR | `https://feeds.npr.org/1001/rss.xml` |
+| The Guardian (World) | `https://www.theguardian.com/world/rss` |
+| Al Jazeera | `https://www.aljazeera.com/xml/rss/all.xml` |
+
+Four rather than three, because cross-outlet clusters only appear when several
+outlets cover the same story on the same day; three feeds produced a lot of
+singletons. Edit `FEEDS` in `newspulse/config.py` to change them.
 
 ## Setup
 
 ```bash
-cd api
-npm install
-cp .env.example .env        # then set DATABASE_URL
-npm start                   # or: npm run dev
-npm test                    # 24 integration tests, no mocks
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+python -m newspulse ingest      # pull feeds, store new articles, fetch bodies
+python -m newspulse cluster     # build topic clusters
+python -m newspulse stats       # what's in the DB
+python -m newspulse export -o clusters.json   # JSON handoff for the Node API
 ```
 
-The API reads the SQLite file the Python pipeline writes, so run
-`python -m newspulse run` at least once first. The server refuses to start if
-`DATABASE_URL` is missing or points at a nonexistent file — a loud failure at
-boot beats 500s on the first request that touches the bad setting.
+`python -m newspulse run` does ingest + cluster in one go — that's the command a
+scheduler calls:
 
-## Endpoints
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/clusters` | Paginated cluster list: label, article count, time range |
-| GET | `/clusters/:id` | Full cluster with all articles, chronological |
-| GET | `/timeline` | Clusters shaped for plotting |
-| POST | `/ingest/trigger` | Starts the Python pipeline, returns a job id (202) |
-| GET | `/ingest/status/:jobId` | Poll target for a running job |
-| GET | `/ingest/jobs` | Recent run history |
-| GET | `/meta` | Corpus counts + source list, for filter UIs |
-| GET | `/health` | Liveness + real DB round-trip |
-
-### `GET /clusters`
-
-Query params (all validated; unknown params are **rejected**, not ignored):
-
-`limit` (1–`MAX_PAGE_SIZE`), `offset`, `minSize`, `source`, `q` (matches label
-or keywords), `since`, `until` (ISO-8601), `sort` (`size` | `recent` | `oldest`
-| `label`).
-
-```json
-{
-  "data": [{
-    "id": "1574d48cb1f47022",
-    "label": "Coastal / Wildfire / Towns",
-    "keywords": ["coastal", "wildfire", "towns"],
-    "articleCount": 3,
-    "sourceCount": 3,
-    "timeRange": { "start": "...", "end": "...", "durationHours": 10 },
-    "updatedAt": "..."
-  }],
-  "pagination": { "total": 6, "limit": 25, "offset": 0, "hasMore": false, "nextOffset": null },
-  "filters": { "minSize": null, "sort": "size", "...": null }
-}
+```
+*/30 * * * * cd /srv/news-pulse && .venv/bin/python -m newspulse run >> logs/pulse.log 2>&1
 ```
 
-No article bodies here — this backs a list view that may hold hundreds of
-clusters, and filtering happens in SQL rather than by loading the table into JS.
+## How it works
 
-### `GET /clusters/:id`
+### Handling feed inconsistency
 
-Adds `articles` (chronological, `?order=desc` to flip), `sources`, and
-`representativeHeadline` — the member nearest the cluster centre, which reads
-better on a card than the extractive keyword label. Each article carries
-`publishedEstimated` so the UI can mark timestamps the pipeline had to infer
-rather than presenting a guess as fact, and `hasFullText` so it can indicate
-where body extraction failed.
+Every feed shapes its XML differently, so nothing is read from a single field
+name. `normalise_entry` walks a list of candidates for each piece of data —
+`content:encoded` → `summary_detail` → `description` → `subtitle` for text,
+`media:thumbnail` → `media:content` → typed `<link>` for images.
 
-400 on a malformed id, 404 on a well-formed but unknown one.
+Dates are the worst offender. `util.parse_date` accepts feedparser's
+`struct_time`, RFC-822 strings, ISO-8601, `dc:date`, and anything `dateutil` can
+guess, trying each candidate in turn. Items with **no** date at all fall back to
+the feed-level `lastBuildDate`, and finally to ingestion time — those rows are
+flagged `published_est = 1` so the timeline can render them differently rather
+than silently pretending they're precise. Timestamps are stored as ISO-8601 UTC.
 
-### `GET /timeline`
+### Full article text
 
-The shape here is the part worth explaining. A raw list of clusters would force
-the chart component to derive its own x-domain, bucket the timestamps, normalise
-intensity and solve row placement — all layout-independent work that belongs on
-the server, computed once instead of on every re-render.
+RSS gives a one-line summary, so each new article's page is fetched and the body
+extracted: **trafilatura** first (good boilerplate removal across most outlets),
+falling back to a BeautifulSoup heuristic that strips nav/aside/footer, finds
+`<article>`/`<main>`, and joins the substantial `<p>` blocks. Anything under
+`MIN_BODY_CHARS` (400) counts as a failed extraction.
 
-```jsonc
-{
-  "data": {
-    "domain":  { "start": "...", "end": "...", "durationHours": 28,
-                 "bucketHours": 6, "bucketCount": 7 },
-    "buckets": ["2026-09-20T06:00:00.000Z", "..."],   // shared x-axis ticks
-    "laneCount": 4,
-    "series": [{
-      "id": "13da4a03bfd764b7",
-      "label": "Football / League / Deal",
-      "keywords": ["football", "league", "deal"],
-      "sources": ["BBC News", "NPR"],
-      "start": "...", "end": "...",
-      "displayEnd": "...",      // bar end, floored to 1h so nothing is invisible
-      "durationHours": 28,
-      "articleCount": 2, "sourceCount": 2,
-      "intensity": 0.667,       // 0..1, ready for a colour/opacity scale
-      "velocity": 1.71,         // articles per day while the story was live
-      "peakAt": "...",
-      "lane": 0,                // pre-packed row index for a Gantt view
-      "points": [{ "t": "...", "count": 1, "cumulative": 1 }]
-    }],
-    "meta": { "clusterCount": 5, "totalArticles": 12, "maxArticleCount": 3,
-              "maxBucketCount": 3, "minBarHours": 1, "generatedAt": "..." }
-  }
-}
+Failures are expected and never raised. Each article carries `body_status`
+(`ok` / `failed` / `skipped` / `pending`) and `body_error`, so one paywalled or
+JS-rendered page can't take down a run. Article-page fetching is also capped per
+run (`MAX_ARTICLE_FETCHES`) with a politeness delay between requests.
+
+### Deduplication and re-runnability
+
+Two layers, both enforced as UNIQUE constraints in SQLite so correctness doesn't
+depend on the application logic being right:
+
+1. **`id = sha1(canonical_url)`.** `canonical_url` lowercases the host, drops
+   `www.`, strips the fragment, trailing slash, and tracking params (`utm_*`,
+   `cmp`, `ocid`, `fbclid`…), so the same article arriving via two feeds hashes
+   identically.
+2. **`title_key = sha1(source + normalised_title)`**, which catches an outlet
+   republishing a story under a fresh URL.
+
+Known URLs are loaded into memory *before* any network call and new items are
+checked against them, so a repeat run does no article-page fetching at all. A
+second identical run inserts 0 rows — asserted in the offline test.
+
+Note this dedupes *identical* articles. Merging the same story across different
+outlets is the clustering step's job, not the dedupe step's.
+
+## Clustering
+
+### Which approach, and why
+
+**Option B — TF-IDF + cosine similarity** is the default. Option A
+(keyword overlap) is also implemented and selectable with `--method keyword`,
+partly as a no-dependency fallback and partly as a check that the TF-IDF
+clusters aren't an artefact of the vectoriser.
+
+TF-IDF was chosen because raw word overlap has no notion of term rarity. In news
+text that matters a lot: "officials", "analysts", "according" and similar wire
+filler appear in most articles, so overlap counts are dominated by words that
+carry no topical signal. TF-IDF down-weights exactly those terms automatically,
+which means it can safely read the full article body — the keyword method can't,
+and is restricted to headline + summary for that reason. (This is visible in the
+offline fixtures: run the keyword method over full bodies and all 13 articles
+fuse into one cluster.)
+
+Mechanics:
+
+- **Document text** = headline (counted twice — it's the densest topical signal
+  available) + summary + the first 700 chars of the body. Body *leads*, not
+  whole bodies: later paragraphs drift into background context and blur topics.
+- **Vectoriser**: `ngram_range=(1,2)` so multi-word entities like "supreme
+  court" survive as single features, `sublinear_tf=True` to damp word repetition
+  in long articles, `max_df=0.6` to drop near-universal terms.
+- **Grouping**: pairwise cosine similarity, then single-linkage via union-find
+  — any pair over the threshold joins the same cluster. Chosen over KMeans
+  because the number of stories in a feed window isn't known in advance and
+  shouldn't have to be guessed.
+- **Time window**: two articles are only linked if published within
+  `TIME_WINDOW_HOURS` (96) of each other. Without this, recurring coverage of a
+  standing topic — two unrelated election stories six weeks apart — collapses
+  into one permanent blob and the timeline stops meaning anything.
+- **Label**: top 3 terms of the cluster's TF-IDF centroid, skipping terms
+  subsumed by a chosen bigram. A representative headline (member nearest the
+  centroid) is also stored, since labels like "Inflation / Bank / Interest" are
+  useful for grouping but a headline reads better on a timeline card.
+- **Cluster IDs** are seeded on the earliest member's ID, so a cluster keeps a
+  stable identity across runs as later articles are appended to it.
+
+### How the thresholds were picked
+
+`tests/make_fixtures.py` generates 13 synthetic articles across 6 known stories,
+spread over three feeds with deliberately different formats. `tests/tune.py`
+sweeps parameters and scores pairwise precision/recall against that ground truth:
+
+```
+TF-IDF cosine threshold          Keyword min shared words
+  0.15  6 clusters  F1=1.00        2   6 clusters  F1=1.00
+  0.20  6 clusters  F1=1.00        3   8 clusters  F1=0.80
+  0.24  6 clusters  F1=1.00        4  10 clusters  F1=0.50
+  0.28  7 clusters  F1=0.88        5  12 clusters  F1=0.20
+  0.32  9 clusters  F1=0.62
+  0.40 10 clusters  F1=0.50
 ```
 
-Specific decisions:
+Defaults: **cosine ≥ 0.24**, **3 shared words**. Two caveats worth being
+explicit about:
 
-- **Bucket size is snapped**, not computed as `span/48`. Targeting 48 buckets
-  and rounding to the nearest of 1/2/3/6/12/24/48/168 hours means axis ticks
-  land on recognisable intervals instead of 37-minute ones. Override with
-  `?bucketHours=`.
-- **`points` is the same length for every series**, indexed against `buckets`,
-  so a stacked or stream chart can index positionally without joining on
-  timestamps.
-- **`displayEnd`** exists because single-article clusters have `start === end`
-  and a zero-width bar renders as nothing. Draw `displayEnd`, show `end` in the
-  tooltip.
-- **`lane`** is greedy interval packing done server-side, so a Gantt view can
-  render rows directly. A test asserts no two bars on a lane overlap.
-- **`intensity` and `velocity` are different metrics on purpose.** Article count
-  alone can't distinguish a story that drew 6 articles in 3 hours from one that
-  drew 6 over a week; the first is breaking news and should look different.
-- **`minSize` defaults to 2.** Singletons are the bulk of any run and would bury
-  the real stories under one-bar-high noise. Pass `minSize=1` to see everything.
+- The synthetic corpus is cleaner than real news, so the plateau at the top is
+  wider than it would be on live feeds. 0.24 sits mid-plateau rather than at its
+  edge deliberately — there's headroom on both sides before quality degrades.
+- The sweep shows precision stays at 1.00 everywhere and only recall moves.
+  That's a property of single-linkage: raising the threshold only ever splits
+  clusters. The real risk is at the *low* end, where a single spurious link
+  chains two unrelated stories together, and the fixtures are too clean to
+  surface it. On live feeds I'd tune downward cautiously and watch for
+  chaining, not upward.
 
-Empty results still return a valid payload (`series: []`, `domain: null`) rather
-than a 404 — no matches is a legitimate answer to a well-formed query.
+Both were verified end-to-end offline (`tests/run_offline.py`): TF-IDF recovers
+all 6 ground-truth stories exactly, with no cross-story contamination.
 
-### `POST /ingest/trigger` → `GET /ingest/status/:jobId`
+### One limitation I noticed
 
-Returns **202** with a job id, not 200: the work has been accepted, not
-completed. An ingest run fetches dozens of article pages and takes minutes;
-holding an HTTP connection open for that hits every proxy and load-balancer
-timeout in the path, hence the job-id + polling contract.
+**Single-linkage chains through "bridge" articles.** Because any single pair
+above the threshold merges two groups, one article that straddles two stories —
+a round-up piece, or an analysis mentioning both an election and an economy
+story — can fuse two otherwise-distinct clusters into one. The time window keeps
+this from doing unbounded damage, but within a 96-hour window it does happen,
+and it's the failure mode most likely to produce an incoherent cluster.
 
-```json
-{ "data": { "jobId": "…uuid…", "status": "queued",
-            "statusUrl": "/ingest/status/…", "pollIntervalMs": 2000 } }
+The fix isn't a higher threshold (that fragments genuine clusters faster than it
+prevents chaining, as the sweep shows). It's either average-linkage — require a
+new member to be similar to the cluster *centroid*, not just to one member — or
+a post-pass that splits any cluster whose internal similarity falls below a
+floor. Average-linkage is the change I'd make next.
+
+A second, smaller one: labels are extractive, so a cluster about a named person
+often gets labelled with their surname plus two generic nouns. Good enough for a
+chip on a timeline card, not good enough to read as a headline — which is why
+the representative headline is stored alongside it.
+
+## Layout
+
+```
+newspulse/
+  config.py      feeds, thresholds, limits
+  util.py        date parsing, URL canonicalisation, text cleaning, hashing
+  db.py          SQLite schema + data access
+  ingest.py      feed parsing, normalisation, body extraction, dedupe
+  cluster.py     TF-IDF and keyword clustering, labelling
+  stopwords.py   English stop words + news-wire filler
+  cli.py         ingest / cluster / run / export / stats
+tests/
+  make_fixtures.py  synthetic feeds with inconsistent formats
+  run_offline.py    end-to-end test, no external network
+  tune.py           parameter sweep vs. ground truth
 ```
 
-Status returns `queued` | `running` | `succeeded` | `failed`, plus `durationMs`,
-`exitCode`, a `logTail`, and `stats` parsed out of the pipeline's own summary
-line (`seen=120 new=14 duplicates=106 …`) so the UI can show what a run actually
-did rather than just "done". `isTerminal` gives the client an explicit stop
-condition instead of string-matching on status values.
+## Schema
 
-**One run at a time.** Concurrent runs would race on the same SQLite file and
-re-fetch the same article pages for no benefit, so a second trigger returns
-**409** with the in-flight job's id — the client polls that one instead of
-failing.
+`articles` is append-only. `clusters` and `article_clusters` are rebuilt on every
+clustering run, since assignments legitimately shift as new articles arrive —
+clustering is cheap, and keeping stale assignments would be worse than redoing
+them. `runs` records per-run counts for debugging ingestion over time.
 
-Job state lives in an `api_jobs` table rather than an in-memory Map, so it
-survives a restart. On boot, any job still marked `running` is reconciled to
-`failed` ("Interrupted by API restart") — otherwise a crash mid-run leaves the
-frontend polling forever.
+## Handoff to Part 2
 
-## Errors
-
-One envelope everywhere, including 404s on unmatched routes, so the client never
-handles two error shapes:
-
-```json
-{ "error": { "code": "BAD_REQUEST", "message": "…", "details": { } } }
-```
-
-| Status | When |
-|---|---|
-| 400 | Bad or unknown query param, malformed id, inverted date range, bad JSON body |
-| 404 | Well-formed id that doesn't exist; unmatched route |
-| 409 | Ingest triggered while another run is in flight |
-| 500 | Unexpected — logged in full, message **not** echoed to the client |
-| 503 | `INGEST_ENABLED=false`, or DB unreachable at `/health` |
-
-Unknown query parameters are a 400 rather than being ignored, because silently
-dropping a misspelled `minSize` returns a plausible-looking but wrong result set
-— worse for a frontend developer than an explicit rejection.
-
-Internal error messages are never returned in production; they can leak file
-paths and SQL. `NODE_ENV=development` adds a `debug` field.
-
-## Configuration
-
-Everything is environment-driven — see `.env.example`. Nothing that varies
-between machines is in the source.
-
-| Variable | Default | Notes |
-|---|---|---|
-| `DATABASE_URL` | — | **Required.** Path to the pipeline's SQLite file |
-| `PORT` / `HOST` | 4000 / 0.0.0.0 | |
-| `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated, or `*` |
-| `INGEST_COMMAND` | `python3` | Point at the venv interpreter in production |
-| `INGEST_ARGS` | `-m,newspulse,run` | |
-| `INGEST_CWD` | `.` | Must contain the `newspulse` package |
-| `INGEST_TIMEOUT_MS` | 600000 | SIGTERM then SIGKILL on overrun |
-| `INGEST_ENABLED` | `true` | Set `false` where a scheduler owns ingestion |
-| `DEFAULT_PAGE_SIZE` / `MAX_PAGE_SIZE` | 25 / 100 | |
-
-## Database
-
-SQLite via `better-sqlite3`, opened with WAL so a Python ingest run writing to
-the file doesn't block reads being served to the frontend, and a 5s busy
-timeout for the moments it does contend.
-
-The API **reads** `articles` / `clusters` / `article_clusters` (owned by the
-pipeline) and **owns** `api_jobs`. That split is deliberate: the pipeline is
-free to drop and rebuild cluster assignments on every run without the API
-needing to care.
-
-SQLite was chosen because both halves run on one host and it removes a service
-from the deploy. It is the one thing here that wouldn't survive horizontal
-scaling — see below.
-
-## Tests
-
-`npm test` runs 24 integration tests against a real Express server and a real
-database. No mocked DB layer, so the SQL is actually exercised. Coverage
-includes every endpoint, each error status, chronological ordering, the lane
-non-overlap invariant, cumulative-count consistency, and the 409 concurrency
-guard.
-
-## Known limits
-
-- **Single instance.** Job state is in SQLite, but the child-process handles are
-  in-memory, so the 409 guard is per-process. Across instances this needs a real
-  queue (BullMQ/Redis); only the runner changes, since the state is already
-  persisted.
-- **SQLite means one writer.** Fine for one API process plus a scheduled
-  pipeline. A move to Postgres would touch `db.js` and nothing else — the query
-  shapes are plain SQL.
-- **`/timeline` computes buckets per request.** Cheap at a few hundred clusters,
-  but it's the first thing to cache (keyed on `lastClusteredAt`) if the corpus
-  grows.
+`python -m newspulse export -o clusters.json` writes clusters with their
+articles, labels, keywords, source counts and `first_published` /
+`last_published` span — shaped so the Node API can serve it directly, or read
+the SQLite file itself.
