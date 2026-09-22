@@ -1,0 +1,260 @@
+.wrap {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+/* --- Axis ---------------------------------------------------------------- */
+
+.axis {
+  display: flex;
+  align-items: flex-end;
+  border-bottom: 1px solid var(--rule);
+  background: var(--panel-sunken);
+}
+
+.axisGutter {
+  flex: 0 0 var(--rail-w);
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--ink-faint);
+  border-right: 1px solid var(--rule);
+}
+
+.axisTrack {
+  position: relative;
+  flex: 1;
+  height: 38px;
+}
+
+.tick {
+  position: absolute;
+  bottom: 8px;
+  transform: translateX(-50%);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+/* --- Rows ---------------------------------------------------------------- */
+
+.rows {
+  padding: var(--lane-gap) 0;
+}
+
+.row {
+  display: flex;
+  align-items: stretch;
+  min-height: var(--lane-h);
+}
+
+.row + .row {
+  border-top: 1px solid var(--rule-soft);
+}
+
+.label {
+  flex: 0 0 var(--rail-w);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  padding: 6px 14px;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-right: 1px solid var(--rule);
+  transition: background 120ms ease;
+}
+
+.label:hover,
+.label[data-selected] {
+  background: var(--panel-sunken);
+}
+
+.labelText {
+  font-family: var(--font-read);
+  font-size: 15px;
+  line-height: 1.25;
+  color: var(--ink);
+  /* Cluster labels are three keywords; two lines is plenty. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.label[data-selected] .labelText {
+  font-weight: 600;
+}
+
+.labelCount {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Track and bars ------------------------------------------------------ */
+
+.track {
+  position: relative;
+  flex: 1;
+  margin: 7px 0;
+}
+
+.gridline {
+  position: absolute;
+  top: -7px;
+  bottom: -7px;
+  width: 1px;
+  background: var(--rule-soft);
+}
+
+.bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  padding: 0;
+  border: 1px solid rgba(22, 33, 43, 0.22);
+  border-radius: var(--radius);
+  background: rgba(22, 33, 43, var(--fill, 0.14));
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+  animation: unfurl 420ms cubic-bezier(0.22, 0.8, 0.3, 1) both;
+  animation-delay: var(--delay, 0ms);
+  transform-origin: left center;
+}
+
+.bar:hover {
+  background: rgba(22, 33, 43, calc(var(--fill, 0.14) + 0.08));
+}
+
+.bar[data-selected] {
+  border-color: var(--ink);
+  border-width: 1.5px;
+  background: rgba(22, 33, 43, calc(var(--fill, 0.14) + 0.06));
+}
+
+/*
+ * The single orchestrated motion in the interface: bars grow from their start
+ * edge on load, which mirrors how a story actually unfolds left to right.
+ * Everything else here is static until the reader acts.
+ */
+@keyframes unfurl {
+  from {
+    transform: scaleX(0.02);
+    opacity: 0;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+/* One per article: a hairline at the publish minute, coloured by outlet. */
+.mark {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  pointer-events: none;
+  animation: fadeIn 260ms ease both;
+  animation-delay: var(--delay, 0ms);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* --- Tooltip ------------------------------------------------------------- */
+
+.tooltip {
+  position: absolute;
+  z-index: 5;
+  transform: translate(-4px, -100%);
+  min-width: 190px;
+  max-width: 260px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--ink);
+  color: #eef3f5;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-panel);
+  pointer-events: none;
+}
+
+.tooltipTitle {
+  font-family: var(--font-read);
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.tooltipMeta {
+  font-size: 12px;
+  color: #a9bcc5;
+  font-variant-numeric: tabular-nums;
+}
+
+.tooltipSources {
+  margin: 5px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 12px;
+}
+
+.tooltipSources li {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* --- Narrow screens ------------------------------------------------------ */
+
+@media (max-width: 720px) {
+  .wrap {
+    --rail-w: 116px;
+    --lane-h: 54px;
+  }
+
+  .labelText {
+    font-size: 13.5px;
+  }
+
+  .tick {
+    font-size: 11px;
+  }
+
+  /* Every other tick only, or labels collide on a phone. */
+  .tick:nth-child(even) {
+    display: none;
+  }
+}

@@ -69,7 +69,17 @@ export function buildTimeline(rows, { bucketHours: forcedBucket } = {}) {
     sources: r.sources ? r.sources.split(',') : [],
     articleCount: r.articleCount,
     sourceCount: r.sourceCount,
-    stamps: (r.stamps ?? '').split('|').filter(Boolean).map((s) => new Date(s).getTime()).sort((a, b) => a - b),
+    // Each article as (timestamp, source). Small — a handful per cluster — and
+    // it lets the client mark every individual article on the bar instead of
+    // fetching each cluster's detail just to draw it.
+    marks: (r.stamps ?? '')
+      .split('|')
+      .filter(Boolean)
+      .map((pair) => {
+        const at = pair.lastIndexOf('~');
+        return { t: new Date(pair.slice(0, at)).toISOString(), source: pair.slice(at + 1) };
+      })
+      .sort((a, b) => new Date(a.t) - new Date(b.t)),
     start: r.startsAt,
     end: r.endsAt,
   }));
@@ -91,7 +101,8 @@ export function buildTimeline(rows, { bucketHours: forcedBucket } = {}) {
 
   const series = parsed.map((p) => {
     const counts = new Array(bucketCount).fill(0);
-    for (const t of p.stamps) {
+    for (const { t: iso } of p.marks) {
+      const t = new Date(iso).getTime();
       const i = Math.min(bucketCount - 1, Math.max(0, Math.floor((t - alignedStart) / bucketMs)));
       counts[i] += 1;
     }
@@ -128,6 +139,7 @@ export function buildTimeline(rows, { bucketHours: forcedBucket } = {}) {
       // 6 articles in 3 hours from one that drew 6 over a week.
       velocity: Number((p.articleCount / Math.max(durationHours, MIN_BAR_HOURS) * 24).toFixed(2)),
       peakAt: buckets[peakIndex],
+      marks: p.marks,
       points,
     };
   });

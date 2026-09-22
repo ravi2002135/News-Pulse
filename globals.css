@@ -1,0 +1,100 @@
+/*
+ * News Pulse — visual system
+ *
+ * The reference object is a broadcast schedule grid: stories occupy time slots
+ * on a rail, the way programmes do in a TV listings page. That gives the
+ * layout its horizontal time axis, its lanes, and its quiet paper ground.
+ *
+ * Hue is reserved entirely for source identity (see lib/format.ts). Nothing
+ * else in the interface is coloured, so any colour a reader sees answers the
+ * question "which outlet?".
+ */
+
+:root {
+  --canvas: #e9edef;      /* cool newsprint grey, not warm cream */
+  --panel: #ffffff;
+  --panel-sunken: #f3f6f7;
+  --ink: #16212b;         /* blue-black */
+  --ink-soft: #4a5d68;
+  --ink-faint: #7b8d97;
+  --rule: #c9d4d9;
+  --rule-soft: #dde5e8;
+  --focus: #1f6fb2;
+
+  --lane-h: 46px;
+  --lane-gap: 8px;
+  --rail-w: 168px;        /* left gutter holding cluster labels */
+
+  --radius: 3px;          /* schedule blocks are near-square, not pill-like */
+  --shadow-panel: 0 1px 2px rgba(22, 33, 43, 0.06), 0 8px 28px rgba(22, 33, 43, 0.1);
+
+  --font-ui: 'Archivo', system-ui, -apple-system, sans-serif;
+  --font-read: 'Newsreader', Georgia, serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Time values, counts and axis ticks all need to align in columns. */
+time,
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+a {
+  color: inherit;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Screen-reader-only text, used for the live region announcing job progress. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
