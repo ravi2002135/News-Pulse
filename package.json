@@ -1,0 +1,20 @@
+{
+  "name": "news-pulse-api",
+  "version": "1.0.0",
+  "description": "REST API serving News Pulse topic clusters and timeline data",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "morgan": "^1.10.0"
+  }
+}
